@@ -97,50 +97,51 @@ jobs:
           cmake --build build-bitmix -j
 
   # ---------------------------------------------------------------------------
-  # Windows. We exercise the build under MSYS2's CLANG64 environment because:
-  #   - the source uses GCC/Clang-style intrinsic headers (<x86intrin.h>);
-  #   - the Makefile uses `uname -m` to pick architecture flags.
-  # This is a more faithful Unix-style build than running MSVC natively.
+  # Windows with Visual Studio (MSVC). The Makefile is GCC/Clang-oriented and
+  # is not exercised here; we drive everything through CMake's Visual Studio
+  # generator, which is the supported way to build clhash on Windows.
   # ---------------------------------------------------------------------------
   windows:
-    name: windows-latest (MSYS2 CLANG64)
+    name: windows-latest (Visual Studio)
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: CLANG64
-          update: true
-          install: >-
-            base-devel
-            mingw-w64-clang-x86_64-clang
-            mingw-w64-clang-x86_64-cmake
-            mingw-w64-clang-x86_64-ninja
+      - name: Configure (CMake, Visual Studio generator)
+        run: cmake -S . -B build -A x64
 
-      - name: Compiler / arch info
+      - name: Build (Release)
+        run: cmake --build build --config Release -j
+
+      - name: Test (CTest, Release)
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Install into a temporary prefix
+        run: cmake --install build --config Release --prefix "${{ runner.temp }}/clhash-install"
+
+      - name: Consume the installed package from a fresh project
+        shell: pwsh
         run: |
-          uname -a
-          clang --version
-
-      - name: Build (Makefile)
-        run: make CC=clang CXX=clang++
-
-      - name: Run binaries (Makefile artefacts)
-        run: |
-          ./unit
-          ./cppunit
-          ./example
-          ./cppexample
-
-      - name: Configure (CMake, Ninja)
-        run: cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
-
-      - name: Build (CMake)
-        run: cmake --build build
-
-      - name: Test (CTest)
-        run: ctest --test-dir build --output-on-failure
+          $consumer = "${{ runner.temp }}/consumer"
+          New-Item -ItemType Directory -Force -Path $consumer | Out-Null
+          @'
+          cmake_minimum_required(VERSION 3.16)
+          project(consumer C)
+          find_package(clhash 1.0 REQUIRED)
+          add_executable(consumer consumer.c)
+          target_link_libraries(consumer PRIVATE clhash::clhash)
+          '@ | Set-Content "$consumer/CMakeLists.txt"
+          @'
+          #include <stdio.h>
+          #include "clhash.h"
+          int main(void) {
+              void *k = get_random_key_for_clhash(1, 2);
+              unsigned long long h = (unsigned long long)clhash(k, "hello", 5);
+              printf("hash=0x%016llx\n", h);
+              free(k);
+              return 0;
+          }
+          '@ | Set-Content "$consumer/consumer.c"
+          cmake -S $consumer -B "$consumer/build" -A x64 -DCMAKE_PREFIX_PATH="${{ runner.temp }}/clhash-install"
+          cmake --build "$consumer/build" --config Release
+          & "$consumer/build/Release/consumer.exe"

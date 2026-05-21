@@ -1,4 +1,6 @@
+#if !defined(_WIN32)
 #define _POSIX_C_SOURCE 199309L
+#endif
 
 #include <stdint.h>
 #include <stdio.h>
@@ -7,15 +9,32 @@
 #include <string.h>
 #include <assert.h>
 #include <stdbool.h>
-#include <time.h>
 #include "clhash.h"
 
-
+#if defined(_WIN32)
+/* Windows: clock_gettime is not part of the C runtime, so we use
+ * QueryPerformanceCounter, which gives a high-resolution monotonic counter. */
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+static inline uint64_t now_ns(void) {
+    static LARGE_INTEGER freq = {0};
+    if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
+    LARGE_INTEGER c;
+    QueryPerformanceCounter(&c);
+    /* (c * 1e9) / freq, split to avoid overflow on long-running processes. */
+    uint64_t sec  = (uint64_t)c.QuadPart / (uint64_t)freq.QuadPart;
+    uint64_t frac = (uint64_t)c.QuadPart % (uint64_t)freq.QuadPart;
+    return sec * UINT64_C(1000000000)
+         + (frac * UINT64_C(1000000000)) / (uint64_t)freq.QuadPart;
+}
+#else
+#include <time.h>
 static inline uint64_t now_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec;
 }
+#endif
 
 /*
  * Times `test` over several batches of `repeat` calls each, using

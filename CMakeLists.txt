@@ -31,6 +31,17 @@ target_include_directories(clhash PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 
+# Per-architecture intrinsic flags. GCC/Clang require the user to opt in to
+# PCLMULQDQ/SSE4.2 on x86 and to the crypto extension on ARM; MSVC and clang-cl
+# on x64 enable the equivalent intrinsics by default.
+if(NOT MSVC)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i[3-6]86")
+    target_compile_options(clhash PRIVATE -msse4.2 -mpclmul)
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+    target_compile_options(clhash PRIVATE -march=armv8-a+crypto)
+  endif()
+endif()
+
 if(CLHASH_ENABLE_BITMIX)
   target_compile_definitions(clhash PUBLIC CLHASH_BITMIX)
 endif()

@@ -4,7 +4,10 @@
 #include <string.h>
 
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
-#include <x86intrin.h>
+/* <immintrin.h> works on GCC, Clang, and MSVC (unlike <x86intrin.h>, which
+ * is GCC/Clang-only) and pulls in the SSE2/SSSE3/SSE4.x + PCLMULQDQ headers
+ * we need. */
+#include <immintrin.h>
 #elif defined(__aarch64__) || defined(_M_ARM64)
 /*
  * ARMv8 NEON port. We provide a thin shim that re-implements the small set of
@@ -103,9 +106,6 @@ static inline __m128i _mm_shuffle_epi8(__m128i table, __m128i indices) {
 #error "clhash requires either x86 with PCLMULQDQ or ARMv8 with the crypto/PMULL extension"
 #endif
 
-#ifdef __WIN32
-#define posix_memalign(p, a, s) (((*(p)) = _aligned_malloc((s), (a))), *(p) ?0 :errno)
-#endif
 
 
 
@@ -543,11 +543,15 @@ uint64_t xorshift128plus(xorshift128plus_key_t * key) {
 void * get_random_key_for_clhash(uint64_t seed1, uint64_t seed2) {
     xorshift128plus_key_t k;
     xorshift128plus_init(seed1, seed2, &k);
-    void * answer;
-    if (posix_memalign(&answer, sizeof(__m128i),
-                       RANDOM_BYTES_NEEDED_FOR_CLHASH)) {
-        return NULL;
-    }
+    /* Plain malloc(): on every 64-bit platform we support (glibc, musl,
+     * Apple libc, MSVC UCRT) it already returns memory aligned to at least
+     * 16 bytes (alignof(max_align_t)), which is what the SSE/NEON loads
+     * below assume. Returning malloc-compatible memory means the caller can
+     * use plain free() on every platform, including Windows — _aligned_malloc
+     * would have required _aligned_free and broken the free() contract. */
+    void * answer = malloc(RANDOM_BYTES_NEEDED_FOR_CLHASH);
+    if (answer == NULL) return NULL;
+    assert(((uintptr_t)answer & 15) == 0);
     uint64_t * a64 = (uint64_t *) answer;
     for(uint32_t i = 0; i < RANDOM_64BITWORDS_NEEDED_FOR_CLHASH; ++i) {
         a64[i] =  xorshift128plus(&k);
