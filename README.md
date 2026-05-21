@@ -1,4 +1,5 @@
 # clhash
+[![CI](https://github.com/simdhash/clhash/actions/workflows/ci.yml/badge.svg)](https://github.com/simdhash/clhash/actions/workflows/ci.yml)
 
 C library implementing the ridiculously fast CLHash hashing function (with C++ wrappers)
 
