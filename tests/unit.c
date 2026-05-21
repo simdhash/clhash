@@ -5,6 +5,14 @@
 
 #include "clhash.h"
 
+/*
+ * This test binary combines four complementary checks:
+ * 1) bit-flip sensitivity on small inputs,
+ * 2) known-answer vectors for cross-implementation compatibility,
+ * 3) collision smoke tests on long messages,
+ * 4) avalanche behavior sanity checks.
+ */
+
 /* Always-on check, independent of NDEBUG: prints the failing expression and aborts. */
 #define assert_true(cond) do {                                                   \
     if (!(cond)) {                                                               \
@@ -26,6 +34,12 @@ static inline void flipbit ( void * block, int length, uint32_t bit ) {
     b[byte] ^= (1 << bit);
 }
 
+/*
+ * Avalanche test:
+ * for short messages, flip each input bit and verify hash changes.
+ * For very short lengths (<= 8 bytes), also verify the flip-delta pattern is
+ * independent of the chosen byte value.
+ */
 static void clhashavalanchetest() {
     const int N = 1024;
     char * array  = (char*)malloc(N);
@@ -78,6 +92,10 @@ static void clhashavalanchetest() {
 
 // ---------------------------------------------------------------------
 // contributed by Eik List
+/*
+ * Collision-oriented regression test:
+ * mutate the last byte of long-ish messages and assert hash output differs.
+ */
 static void clhashcollisiontest() {
     printf("[clhashcollisiontest] Testing whether we can induce collisions by hacking the right bytes (Eik List's test).\n");
     const size_t NUM_TRIALS = 10;
@@ -121,6 +139,10 @@ static void clhashcollisiontest() {
 }
 
 
+/*
+ * Basic bit stability test:
+ * flipping one bit changes the hash, flipping it back restores the hash.
+ */
 static void clhashtest() {
     const int N = 1024;
     char * array  = (char*)malloc(N);
@@ -175,6 +197,11 @@ typedef struct {
     uint64_t expected;
 } clhash_vector_t;
 
+/*
+ * Fixed vectors used to validate determinism across ports.
+ * If another implementation reproduces key generation and hashing logic,
+ * these expected outputs should match exactly.
+ */
 static const clhash_vector_t known_answer_vectors[] = {
     /* seed (1, 2) -- simple seeds, easy to reproduce from scratch */
     { UINT64_C(0x0000000000000001), UINT64_C(0x0000000000000002), "",                                            0,  UINT64_C(0x0000000000000000) },
@@ -260,6 +287,10 @@ static void clhashknownanswertest(void) {
     printf("Test passed! \n");
 }
 
+/*
+ * Minimal API usage example mirrored by examples/example.c.
+ * Kept here so unit output exercises a tiny end-to-end scenario too.
+ */
 void demo() {
     // generate random key
     void * random =  get_random_key_for_clhash(UINT64_C(0x23a23cf5033c3c81),UINT64_C(0xb3816f6a2c68e530));
@@ -274,6 +305,7 @@ void demo() {
 
 
 int main() {
+    /* Keep order stable: cheap tests first, heavier stress tests after. */
     clhashtest();
     clhashknownanswertest();
     clhashcollisiontest();

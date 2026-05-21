@@ -2,12 +2,123 @@
 
 #include <assert.h>
 #include <string.h>
+
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 #include <x86intrin.h>
+#elif defined(__aarch64__) || defined(_M_ARM64)
+/*
+ * ARMv8 NEON port. We provide a thin shim that re-implements the small set of
+ * SSE2/SSSE3/PCLMULQDQ intrinsics used by clhash on top of NEON + the PMULL
+ * crypto extension (FEAT_PMULL). This keeps the algorithm code below
+ * architecture-neutral. Carry-less multiplication uses vmull_p64, which maps
+ * to the PMULL/PMULL2 instructions, so the build needs +crypto (or +aes on
+ * recent toolchains).
+ */
+#include <arm_neon.h>
+
+typedef uint64x2_t __m128i;
+
+static inline __m128i _mm_setzero_si128(void) { return vdupq_n_u64(0); }
+static inline __m128i _mm_xor_si128(__m128i a, __m128i b) { return veorq_u64(a, b); }
+static inline __m128i _mm_or_si128(__m128i a, __m128i b)  { return vorrq_u64(a, b); }
+static inline __m128i _mm_and_si128(__m128i a, __m128i b) { return vandq_u64(a, b); }
+
+/* vshlq_n_u64 / vshrq_n_u64 require strict integer literals, but the callers
+ * here pass `const int` locals. Use the register-based shift form instead;
+ * with a constant n the compiler folds it back to a literal-shift instr. */
+#define _mm_slli_epi64(a, n) vshlq_u64((a), vdupq_n_s64((int64_t)(n)))
+#define _mm_srli_epi64(a, n) vshlq_u64((a), vdupq_n_s64(-(int64_t)(n)))
+
+/* Byte shifts of the whole 128-bit register. vextq_u8(x, y, n) concatenates
+ * x and y and extracts starting at byte n, so we use a zero vector to fill
+ * in the bytes shifted in. */
+#define _mm_slli_si128(a, imm) \
+    vreinterpretq_u64_u8(vextq_u8(vdupq_n_u8(0), vreinterpretq_u8_u64(a), 16 - (imm)))
+#define _mm_srli_si128(a, imm) \
+    vreinterpretq_u64_u8(vextq_u8(vreinterpretq_u8_u64(a), vdupq_n_u8(0), (imm)))
+
+static inline __m128i _mm_set_epi64x(int64_t hi, int64_t lo) {
+    return vcombine_u64(vcreate_u64((uint64_t)lo), vcreate_u64((uint64_t)hi));
+}
+
+static inline __m128i _mm_setr_epi32(int32_t a, int32_t b, int32_t c, int32_t d) {
+    int32_t tmp[4] = { a, b, c, d };
+    return vreinterpretq_u64_s32(vld1q_s32(tmp));
+}
+
+static inline __m128i _mm_setr_epi8(char b0, char b1, char b2, char b3,
+                                    char b4, char b5, char b6, char b7,
+                                    char b8, char b9, char b10, char b11,
+                                    char b12, char b13, char b14, char b15) {
+    int8_t tmp[16] = { b0, b1, b2, b3, b4, b5, b6, b7,
+                       b8, b9, b10, b11, b12, b13, b14, b15 };
+    return vreinterpretq_u64_s8(vld1q_s8(tmp));
+}
+
+static inline __m128i _mm_cvtsi64_si128(int64_t a) {
+    return vsetq_lane_u64((uint64_t)a, vdupq_n_u64(0), 0);
+}
+
+static inline int64_t _mm_cvtsi128_si64(__m128i a) {
+    return (int64_t)vgetq_lane_u64(a, 0);
+}
+
+static inline __m128i _mm_load_si128(const __m128i *p) {
+    return vld1q_u64((const uint64_t *)p);
+}
+
+static inline __m128i _mm_lddqu_si128(const __m128i *p) {
+    return vld1q_u64((const uint64_t *)p);
+}
+
+static inline __m128i _mm_loadl_epi64(const __m128i *p) {
+    uint64_t lo;
+    memcpy(&lo, p, sizeof(lo));
+    return vsetq_lane_u64(lo, vdupq_n_u64(0), 0);
+}
+
+/* PCLMULQDQ: imm bit 0 picks the half of a, bit 4 picks the half of b. */
+#define _mm_clmulepi64_si128(a, b, imm)                                       \
+    vreinterpretq_u64_p128(vmull_p64(                                         \
+        (poly64_t)vgetq_lane_u64((a), ((imm) & 0x01) ? 1 : 0),                \
+        (poly64_t)vgetq_lane_u64((b), ((imm) & 0x10) ? 1 : 0)))
+
+/* SSSE3 byte shuffle.  _mm_shuffle_epi8 differs from vqtbl1q_u8 when an
+ * index byte is in 16..127: SSE masks with 0x0F (still indexes into the
+ * 16-byte table); NEON returns 0. In clhash this intrinsic is only used by
+ * precompReduction64_si128, where the index vector is _mm_srli_si128(Q2,8)
+ * and Q2 = clmul(A, 0x1B), so all index bytes are in 0..15 — the two
+ * intrinsics coincide there. We still mask to 0x0F to keep the shim
+ * semantically equivalent for any caller that respects the high-bit-zero
+ * convention. */
+static inline __m128i _mm_shuffle_epi8(__m128i table, __m128i indices) {
+    uint8x16_t tbl = vreinterpretq_u8_u64(table);
+    uint8x16_t idx = vreinterpretq_u8_u64(indices);
+    uint8x16_t zero_mask = vcgeq_s8(vreinterpretq_s8_u8(idx), vdupq_n_s8(0)); /* 0xFF where high bit == 0 */
+    uint8x16_t masked = vandq_u8(idx, vdupq_n_u8(0x0F));
+    uint8x16_t looked_up = vqtbl1q_u8(tbl, masked);
+    return vreinterpretq_u64_u8(vandq_u8(looked_up, zero_mask));
+}
+#else
+#error "clhash requires either x86 with PCLMULQDQ or ARMv8 with the crypto/PMULL extension"
+#endif
 
 #ifdef __WIN32
 #define posix_memalign(p, a, s) (((*(p)) = _aligned_malloc((s), (a))), *(p) ?0 :errno)
 #endif
 
+
+
+/*
+ * High-level overview of clhash():
+ * 1) Split input into 64-bit words (+ one optional partial word).
+ * 2) Compute a CLMUL-based half-scalar product against random key material.
+ * 3) For long inputs, fold 1024-byte chunks with a polynomial multiplier
+ *    (lazy reduction in GF(2)).
+ * 4) Mix in a length-dependent term so same prefix at different lengths does
+ *    not collide systematically.
+ * 5) Reduce from 128 bits to final 64-bit hash.
+ */
 
 
 // computes a << 1
@@ -37,6 +148,10 @@ static inline __m128i leftshift2(__m128i a) {
 // Precondition:  given that Ahigh|Alow represents a 254-bit value
 //                  (two highest bits of Ahigh must be zero)
 //////////////////
+/*
+ * Reduce a 254-bit intermediate represented as (Ahigh || Alow) using a cheap
+ * "lazy" modulus step tailored for CLHash's polynomial arithmetic.
+ */
 static inline __m128i lazymod127(__m128i Alow, __m128i Ahigh) {
     ///////////////////////////////////////////////////
     // CHECKING THE PRECONDITION:
@@ -60,6 +175,7 @@ static inline __m128i lazymod127(__m128i Alow, __m128i Ahigh) {
 // multiplication with lazy reduction
 // assumes that the two highest bits of the 256-bit multiplication are zeros
 // returns a lazy reduction
+/* Carry-less 128x128 multiply followed by lazy reduction back to 128 bits. */
 static inline  __m128i mul128by128to128_lazymod127( __m128i A, __m128i B) {
     __m128i Amix1 = _mm_clmulepi64_si128(A,B,0x01);
     __m128i Amix2 = _mm_clmulepi64_si128(A,B,0x10);
@@ -77,6 +193,10 @@ static inline  __m128i mul128by128to128_lazymod127( __m128i A, __m128i B) {
 
 
 // multiply the length and the some key, no modulo
+/*
+ * Length finalizer term: hashed (keylength, length) pair in GF(2), later XORed
+ * into the accumulator so length is part of the hash state.
+ */
 static __m128i lazyLengthHash(uint64_t keylength, uint64_t length) {
     const __m128i lengthvector = _mm_set_epi64x(keylength,length);
     const __m128i clprod1  = _mm_clmulepi64_si128( lengthvector, lengthvector, 0x10);
@@ -89,6 +209,10 @@ static inline __m128i precompReduction64_si128( __m128i A) {
 
     //const __m128i C = _mm_set_epi64x(1U,(1U<<4)+(1U<<3)+(1U<<1)+(1U<<0)); // C is the irreducible poly. (64,4,3,1,0)
     const __m128i C = _mm_cvtsi64_si128((1U<<4)+(1U<<3)+(1U<<1)+(1U<<0));
+    /*
+     * Fast reduction from GF(2^128) to GF(2^64) using a precomputed shuffle
+     * strategy. Only the low 64 bits of the result are meaningful.
+     */
     __m128i Q2 = _mm_clmulepi64_si128( A, C, 0x01);
     __m128i Q3 = _mm_shuffle_epi8(_mm_setr_epi8(0, 27, 54, 45, 108, 119, 90, 65, (char)216, (char)195, (char)238, (char)245, (char)180, (char)175, (char)130, (char)153),
                                   _mm_srli_si128(Q2,8));
@@ -144,6 +268,10 @@ static __m128i __clmulhalfscalarproductwithoutreduction(const __m128i * randomso
 
 
 // the value length does not have to be divisible by 4
+/*
+ * Same half-scalar product as above, but with explicit handling for 1 or 2
+ * trailing 64-bit words.
+ */
 static __m128i __clmulhalfscalarproductwithtailwithoutreduction(const __m128i * randomsource,
         const uint64_t * string, const size_t length) {
     assert(((uintptr_t) randomsource & 15) == 0);// we expect cache line alignment for the keys
@@ -184,6 +312,7 @@ static __m128i __clmulhalfscalarproductwithtailwithoutreduction(const __m128i * 
     return acc;
 }
 // the value length does not have to be divisible by 4
+// additionally folds one extra synthesized word (partial tail packed in LE).
 static __m128i __clmulhalfscalarproductwithtailwithoutreductionWithExtraWord(const __m128i * randomsource,
         const uint64_t * string, const size_t length, const uint64_t extraword) {
     assert(((uintptr_t) randomsource & 15) == 0);// we expect cache line alignment for the keys
@@ -240,7 +369,7 @@ static __m128i __clmulhalfscalarproductOnlyExtraWord(const __m128i * randomsourc
 
 
 
-#ifdef BITMIX
+#ifdef CLHASH_BITMIX
 ////////
 // an invertible function used to mix the bits
 // borrowed directly from murmurhash
@@ -277,6 +406,13 @@ uint64_t clhash(const void* random, const char * stringbyte,
     if(CLHASH_DEBUG) assert((m  & 3) == 0); //m should be divisible by 4
     const int m128neededperblock = m / 2;// that is how many 128-bit words of random bits we use per block
     const __m128i * rs64 = (__m128i *) random;
+    /*
+     * Internal key layout (all coming from get_random_key_for_clhash):
+     * - rs64[0 .. m128neededperblock-1]: per-block random words for products.
+     * - rs64[m128neededperblock]: polynomial multiplier for long-input folding.
+     * - rs64[m128neededperblock+1]: finalization key.
+     * - *(uint64_t*)(rs64 + m128neededperblock + 2): length key.
+     */
     __m128i polyvalue =  _mm_load_si128(rs64 + m128neededperblock); // to preserve alignment on cache lines for main loop, we pick random bits at the end
     polyvalue = _mm_and_si128(polyvalue,_mm_setr_epi32(0xFFFFFFFF,0xFFFFFFFF,0xFFFFFFFF,0x3fffffff));// setting two highest bits to zero
     // we should check that polyvalue is non-zero, though this is best done outside the function and highly unlikely
@@ -285,11 +421,11 @@ uint64_t clhash(const void* random, const char * stringbyte,
 
     const uint64_t * string = (const uint64_t *)  stringbyte;
     if (m < lengthinc) { // long strings // modified from length to lengthinc to address issue #3 raised by Eik List
+        /* First block initializes accumulator directly. */
         __m128i  acc =  __clmulhalfscalarproductwithoutreduction(rs64, string,m);
         size_t t = m;
         for (; t +  m <= length; t +=  m) {
-            // we compute something like
-            // acc+= polyvalue * acc + h1
+            // Horner-like fold: acc <- polyvalue * acc XOR block_hash
             acc =  mul128by128to128_lazymod127(polyvalue,acc);
             const __m128i h1 =  __clmulhalfscalarproductwithoutreduction(rs64, string+t,m);
             acc = _mm_xor_si128(acc,h1);
@@ -297,8 +433,7 @@ uint64_t clhash(const void* random, const char * stringbyte,
         const int remain = length - t;  // number of completely filled words
 
         if (remain != 0) {
-            // we compute something like
-            // acc+= polyvalue * acc + h1
+            // Fold remaining full words plus an optional partial trailing word.
             acc = mul128by128to128_lazymod127(polyvalue, acc);
             if (lengthbyte % sizeof(uint64_t) == 0) {
                 const __m128i h1 =
@@ -321,15 +456,17 @@ uint64_t clhash(const void* random, const char * stringbyte,
             acc = _mm_xor_si128(acc, h1);
         }
 
+        /* Final keyed compression to 64-bit output. */
         const __m128i finalkey = _mm_load_si128(rs64 + m128neededperblock + 1);
         const uint64_t keylength = *(const uint64_t *)(rs64 + m128neededperblock + 2);
         return simple128to64hashwithlength(acc,finalkey,keylength, (uint64_t)lengthbyte);
     } else { // short strings
+        /* Single-block path: no polynomial folding needed. */
         if(lengthbyte % sizeof(uint64_t) == 0) {
             __m128i  acc = __clmulhalfscalarproductwithtailwithoutreduction(rs64, string, length);
             const uint64_t keylength = *(const uint64_t *)(rs64 + m128neededperblock + 2);
             acc = _mm_xor_si128(acc,lazyLengthHash(keylength, (uint64_t)lengthbyte));
-#ifdef BITMIX
+#ifdef CLHASH_BITMIX
             return fmix64(precompReduction64(acc)) ;
 #else
             return precompReduction64(acc) ;
@@ -340,7 +477,7 @@ uint64_t clhash(const void* random, const char * stringbyte,
                           rs64, string, length, lastword);
         const uint64_t keylength =  *(const uint64_t *)(rs64 + m128neededperblock + 2);
         acc = _mm_xor_si128(acc,lazyLengthHash(keylength, (uint64_t)lengthbyte));
-#ifdef BITMIX
+#ifdef CLHASH_BITMIX
         return fmix64(precompReduction64(acc)) ;
 #else
         return precompReduction64(acc) ;

@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Linux x86_64, Linux ARM64, and macOS ARM64. The arch matters because the
+  # x86 build path goes through PCLMULQDQ/SSE intrinsics while the ARM path
+  # goes through the NEON shim + PMULL, and we want both exercised.
+  # ---------------------------------------------------------------------------
+  unix:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest        # Linux x86_64
+          - ubuntu-24.04-arm     # Linux ARM64 (free for public repos)
+          - macos-latest         # macOS ARM64 (Apple Silicon)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compiler / arch info
+        run: |
+          uname -a
+          cc --version
+          c++ --version
+
+      # ----- Makefile build -----
+      - name: Build (Makefile)
+        run: make
+
+      - name: Run binaries (Makefile artefacts)
+        run: |
+          ./unit
+          ./cppunit
+          ./example
+          ./cppexample
+
+      # ----- CMake build + CTest -----
+      - name: Configure (CMake)
+        run: cmake -S . -B build
+
+      - name: Build (CMake)
+        run: cmake --build build -j
+
+      - name: Test (CTest)
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Run examples (CMake artefacts)
+        run: |
+          ./build/example
+          ./build/cppexample
+
+      # ----- Install + downstream find_package() -----
+      - name: Install into a temporary prefix
+        run: cmake --install build --prefix "${{ runner.temp }}/clhash-install"
+
+      - name: Consume the installed package from a fresh project
+        run: |
+          mkdir -p "${{ runner.temp }}/consumer"
+          cd "${{ runner.temp }}/consumer"
+          cat > CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.16)
+          project(consumer C)
+          find_package(clhash 1.0 REQUIRED)
+          add_executable(consumer consumer.c)
+          target_link_libraries(consumer PRIVATE clhash::clhash)
+          EOF
+          cat > consumer.c <<'EOF'
+          #include <stdio.h>
+          #include "clhash.h"
+          int main(void) {
+              void *k = get_random_key_for_clhash(1, 2);
+              uint64_t h = clhash(k, "hello", 5);
+              printf("hash=0x%016llx\n", (unsigned long long)h);
+              free(k);
+              return 0;
+          }
+          EOF
+          cmake -S . -B build -DCMAKE_PREFIX_PATH="${{ runner.temp }}/clhash-install"
+          cmake --build build
+          ./build/consumer
+
+      # ----- CLHASH_BITMIX flavour: build-only smoke test -----
+      # The known-answer vectors in tests/unit.c are derived from the default
+      # (non-BITMIX) hash, so enabling BITMIX makes that test diverge by
+      # design. We just verify it still compiles cleanly.
+      - name: CMake build with CLHASH_BITMIX
+        run: |
+          cmake -S . -B build-bitmix -DCLHASH_ENABLE_BITMIX=ON
+          cmake --build build-bitmix -j
+
+  # ---------------------------------------------------------------------------
+  # Windows. We exercise the build under MSYS2's CLANG64 environment because:
+  #   - the source uses GCC/Clang-style intrinsic headers (<x86intrin.h>);
+  #   - the Makefile uses `uname -m` to pick architecture flags.
+  # This is a more faithful Unix-style build than running MSVC natively.
+  # ---------------------------------------------------------------------------
+  windows:
+    name: windows-latest (MSYS2 CLANG64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-cmake
+            mingw-w64-clang-x86_64-ninja
+
+      - name: Compiler / arch info
+        run: |
+          uname -a
+          clang --version
+
+      - name: Build (Makefile)
+        run: make CC=clang CXX=clang++
+
+      - name: Run binaries (Makefile artefacts)
+        run: |
+          ./unit
+          ./cppunit
+          ./example
+          ./cppexample
+
+      - name: Configure (CMake, Ninja)
+        run: cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+
+      - name: Build (CMake)
+        run: cmake --build build
+
+      - name: Test (CTest)
+        run: ctest --test-dir build --output-on-failure

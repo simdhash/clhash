@@ -1,15 +1,21 @@
 /*
- * CLHash is a very fast hashing function that uses the
- * carry-less multiplication and SSE instructions.
+ * CLHash: 64-bit universal hashing.
  *
- * Daniel Lemire, Owen Kaser, Faster 64-bit universal hashing
- * using carry-less multiplications, Journal of Cryptographic Engineering (to appear)
+ * CLHash is designed for very high throughput on modern CPUs with carry-less
+ * multiplication support.
  *
- * Best used on recent x64 processors (Haswell or better).
+ * Reference:
+ * Daniel Lemire, Owen Kaser, "Faster 64-bit universal hashing using
+ * carry-less multiplications", Journal of Cryptographic Engineering, 2016.
  *
- * Compile option: if you define BITMIX during compilation, extra work is done to
- * pass smhasher's avalanche test succesfully. Disabled by default.
- **/
+ * Hardware note:
+ * This implementation targets modern x86-64 processors and includes ARM paths.
+ * Performance and portability characteristics depend on architecture support.
+ *
+ * Compile option:
+ * If CLHASH_BITMIX is defined at compile time, additional mixing is enabled to
+ * improve avalanche behavior (e.g., for smhasher-style tests). Disabled by default.
+ */
 
 #ifndef INCLUDE_CLHASH_H_
 #define INCLUDE_CLHASH_H_
@@ -23,22 +29,39 @@
 extern "C" {
 #endif
 
+/*
+ * CLHash requires a fixed-size random key (133 64-bit words = 1064 bytes).
+ * Reuse the same key across many inputs for deterministic hashes.
+ */
 enum {RANDOM_64BITWORDS_NEEDED_FOR_CLHASH=133,RANDOM_BYTES_NEEDED_FOR_CLHASH=133*8};
 
 
 
 /**
- *  random : the random data source (should contain at least
- *  RANDOM_BYTES_NEEDED_FOR_CLHASH random bytes), it should
- *  also be aligned on 16-byte boundaries so that (((uintptr_t) random & 15) == 0)
- *  for performance reasons. This is usually generated once and reused with many
- *  inputs.
+ * Compute a 64-bit hash.
  *
+ * Parameters:
+ * - random:
+ *   Pointer to the CLHash key material. It must point to at least
+ *   RANDOM_BYTES_NEEDED_FOR_CLHASH bytes.
+ *   For best performance, 16-byte alignment is recommended.
+ *   Typical usage is to generate this once, then reuse it for many calls.
  *
- * stringbyte : the input data source, could be anything you want to has
+ * - stringbyte:
+ *   Input byte buffer to hash. It may point to arbitrary binary data.
  *
+ * - lengthbyte:
+ *   Input length in bytes.
  *
- * length : number of bytes in the string
+ * Returns:
+ * - 64-bit hash value.
+ *
+ * Minimal usage example (also see examples/example.c):
+ *
+ *   void *key = get_random_key_for_clhash(seed1, seed2);
+ *   uint64_t h1 = clhash(key, "my dog", 6);
+ *   uint64_t h2 = clhash(key, "my cat", 6);
+ *   free(key);
  */
 uint64_t clhash(const void* random, const char * stringbyte,
                 const size_t lengthbyte);
@@ -46,8 +69,17 @@ uint64_t clhash(const void* random, const char * stringbyte,
 
 
 /**
- * Convenience method. Will generate a random key from two 64-bit seeds.
- * Caller is responsible to call "free" on the result.
+ * Generate deterministic CLHash key material from two 64-bit seeds.
+ *
+ * Returns:
+ * - Pointer to an allocated key buffer suitable for clhash().
+ *
+ * Ownership:
+ * - Caller owns the returned pointer and must release it with free().
+ *
+ * Notes:
+ * - Same (seed1, seed2) => same key => same hash outputs for same inputs.
+ * - Different seeds are expected to produce different keys/hashes.
  */
 void * get_random_key_for_clhash(uint64_t seed1, uint64_t seed2);
 
@@ -61,21 +93,36 @@ void * get_random_key_for_clhash(uint64_t seed1, uint64_t seed2);
 #include <cstring> // For std::strlen
 
 struct clhasher {
+    /*
+     * RAII helper for C++ users:
+     * - allocates key data in constructor
+     * - frees key data in destructor
+     */
     const void *random_data_;
     clhasher(uint64_t seed1=137, uint64_t seed2=777): random_data_(get_random_key_for_clhash(seed1, seed2)) {}
+
+    /* Hash an array of T. len is an element count, not a byte count. */
     template<typename T>
     uint64_t operator()(const T *data, const size_t len) const {
         return clhash(random_data_, (const char *)data, len * sizeof(T));
     }
+
+    /* Hash a null-terminated C string (without the final '\0'). */
     uint64_t operator()(const char *str) const {return operator()(str, std::strlen(str));}
+
+    /* Hash an object by raw bytes of its in-memory representation. */
     template<typename T>
     uint64_t operator()(const T &input) const {
         return operator()((const char *)&input, sizeof(T));
     }
+
+    /* Hash std::vector contents as contiguous bytes. */
     template<typename T>
     uint64_t operator()(const std::vector<T> &input) const {
         return operator()((const char *)input.data(), sizeof(T) * input.size());
     }
+
+    /* Hash std::string contents (without implicit null terminator). */
     uint64_t operator()(const std::string &str) const {
         return operator()(str.data(), str.size());
     }
