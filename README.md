@@ -20,18 +20,33 @@ For details, please see the research article:
 
 - Daniel Lemire, Owen Kaser, Faster 64-bit universal hashing using carry-less multiplications, Journal of Cryptographic Engineering 6 (3), 2016. http://arxiv.org/abs/1503.03465
 
+
+## How fast is it?
+
+A standard fast but non-random hash function is a simple recursive function like so:
+
+```c
+uint64_t javalikehash(char *input, size_t length) {
+  uint64_t sum = 0;
+  for(size_t i = 0; i < length; ++i) sum = 31 * sum + (uint64_t) input[i];
+  return sum;
+}
+```
+
+
+
+
 ## Requirements
 
 
-Please do not try to compile and run this software on legacy hardware:
-
-* On x64, you need PCLMULQDQ + SSE4.2 (Haswell or later in practice). On older
+* On x64, you need PCLMULQDQ + SSE4.2 (Haswell from 2013 or later in practice). On older
   x64 chips it will either fail to build or be slow. The Makefile and
-  CMake build pass `-msse4.2 -mpclmul -march=native` on x86.
+  CMake build pass `-msse4.2 -mpclmul -march=native` on x86. Virtually all x64 processors 
+  today fit this requirement.
 * On 64-bit ARM (AArch64), you need the crypto extension that provides the
   PMULL/PMULL2 instructions (advertised via `HWCAP_PMULL` on Linux, and
   always present on Apple Silicon). The build passes `-march=armv8-a+crypto`
-  on ARM.
+  on ARM. Virtually all 64-bit ARM processors support this feature today.
 
 POWER and other architectures are not currently supported; the build will
 fail at preprocessing with a clear `#error`.
@@ -111,8 +126,6 @@ int main(void) {
  ./cppunit
  ```
 
-
-Credit for C++ wrapper: Daniel Baker
 
 ## Citation
 

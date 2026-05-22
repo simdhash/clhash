@@ -9,6 +9,7 @@
 #include <string.h>
 #include <assert.h>
 #include <stdbool.h>
+#include <math.h>
 #include "clhash.h"
 
 #if defined(_WIN32)
@@ -36,46 +37,56 @@ static inline uint64_t now_ns(void) {
 }
 #endif
 
+uint64_t javalikehash(char *input, size_t length);
+
 /*
- * Times `test` over several batches of `repeat` calls each, using
- * clock_gettime(CLOCK_MONOTONIC). Reports nanoseconds per byte. A single hash
- * of a few bytes runs in only a handful of nanoseconds — well below the
- * resolution of clock_gettime on most systems — so we always measure a batch
- * and divide. Taking the minimum across batches filters out scheduling jitter
- * the way the old rdtsc-based "best" estimate did.
+ * Measure "best" nanoseconds per byte over several batches.
+ * Returns a negative value if a validation mismatch is detected.
  */
-#define BEST_TIME(test, expected, pre, repeat, size, verbose)                          \
-    do {                                                                                \
-        const int outer = 5;                                                            \
-        if (verbose) printf("%-60s\t: ", #test);                                        \
-        fflush(NULL);                                                                   \
-        uint64_t best_ns = UINT64_MAX;                                                  \
-        uint64_t sum_ns  = 0;                                                           \
-        bool mismatch = false;                                                          \
-        for (int o = 0; o < outer; o++) {                                               \
-            pre;                                                                        \
-            uint64_t t0 = now_ns();                                                     \
-            for (int i = 0; i < (repeat); i++) {                                        \
-                if ((test) != (expected)) { mismatch = true; break; }                   \
-            }                                                                           \
-            uint64_t t1 = now_ns();                                                     \
-            if (mismatch) break;                                                        \
-            uint64_t dns = t1 - t0;                                                     \
-            if (dns < best_ns) best_ns = dns;                                           \
-            sum_ns += dns;                                                              \
-        }                                                                               \
-        if (mismatch) {                                                                 \
-            printf(" not expected ");                                                   \
-        } else {                                                                        \
-            double S = (double)(size) * (double)(repeat);                               \
-            double best_ns_per_byte = (double)best_ns / S;                              \
-            double avg_ns_per_byte  = (double)sum_ns / ((double)outer * S);             \
-            if (verbose) printf(" %.3f ns per byte (best) \t%.3f ns per byte (avg)\n",  \
-                                best_ns_per_byte, avg_ns_per_byte);                     \
-            else         printf(" %.3f ", best_ns_per_byte);                            \
-        }                                                                               \
-        fflush(NULL);                                                                   \
-    } while (0)
+static double measure_best_ns_per_byte_clhash(const void *key,
+                                              const char *input,
+                                              size_t length,
+                                              int repeat) {
+    const int outer = 5;
+    const uint64_t expected = clhash(key, input, length);
+    uint64_t best_ns = UINT64_MAX;
+
+    for (int o = 0; o < outer; ++o) {
+        uint64_t t0 = now_ns();
+        for (int i = 0; i < repeat; ++i) {
+            if (clhash(key, input, length) != expected) {
+                return -1.0;
+            }
+        }
+        uint64_t t1 = now_ns();
+        uint64_t dns = t1 - t0;
+        if (dns < best_ns) best_ns = dns;
+    }
+
+    return (double)best_ns / ((double)length * (double)repeat);
+}
+
+static double measure_best_ns_per_byte_javalike(const char *input,
+                                                size_t length,
+                                                int repeat) {
+    const int outer = 5;
+    const uint64_t expected = javalikehash((char *)input, length);
+    uint64_t best_ns = UINT64_MAX;
+
+    for (int o = 0; o < outer; ++o) {
+        uint64_t t0 = now_ns();
+        for (int i = 0; i < repeat; ++i) {
+            if (javalikehash((char *)input, length) != expected) {
+                return -1.0;
+            }
+        }
+        uint64_t t1 = now_ns();
+        uint64_t dns = t1 - t0;
+        if (dns < best_ns) best_ns = dns;
+    }
+
+    return (double)best_ns / ((double)length * (double)repeat);
+}
 
 // looks like java
 uint64_t javalikehash(char *input, size_t length) {
@@ -86,7 +97,7 @@ uint64_t javalikehash(char *input, size_t length) {
 
 
 int main() {
-  const int MAXN = 4096;
+  const int MAXN = 4096*16;
   const int repeat = 500;
   char * randominput = (char *) malloc(MAXN);
   for(int k = 0; k < MAXN; k++) randominput[k] = rand();
@@ -95,15 +106,18 @@ int main() {
   printf("# First number is the size in bytes\n");
   printf("# Second number is the number of nanoseconds per byte for clhash\n");
   printf("# Third number is the number of nanoseconds per byte for java-like non-random hash function\n");
-  for(int size = 8; size < MAXN; ++size) {
-        uint64_t hashvalue = clhash(random,randominput, size);
-        printf("%20d\t", size);
-        BEST_TIME(clhash(random,randominput, size), hashvalue, , repeat, size, false);
-        uint64_t javahashvalue = javalikehash(randominput, size);
-        printf("\t");
-        BEST_TIME(javalikehash(randominput, size), javahashvalue, , repeat, size, false);
+  printf("# Fourth number is baseline/clhash ratio\n");
+  for(int size = 8; size < MAXN; size*=3) {
+        double clhash_ns_per_byte = measure_best_ns_per_byte_clhash(random, randominput, (size_t)size, repeat);
+        double baseline_ns_per_byte = measure_best_ns_per_byte_javalike(randominput, (size_t)size, repeat);
+        double ratio = baseline_ns_per_byte / clhash_ns_per_byte;
 
-        printf("\n");
+        printf("%20d\t", size);
+        if ((clhash_ns_per_byte < 0.0) || (baseline_ns_per_byte < 0.0) || !isfinite(ratio)) {
+            printf("not expected\tnot expected\tnot expected\n");
+        } else {
+            printf("%.3f\t%.3f\t%.3f\n", clhash_ns_per_byte, baseline_ns_per_byte, ratio);
+        }
   }
   free(randominput);
   free(random);
