@@ -241,7 +241,7 @@ enum {CLHASH_DEBUG=0};
 
 // For use with CLHASH
 // we expect length to have value 128 or, at least, to be divisible by 4.
-static __m128i __clmulhalfscalarproductwithoutreduction(const __m128i * randomsource, const uint64_t * string,
+static __m128i clmulhalfscalarproductwithoutreduction(const __m128i * randomsource, const uint64_t * string,
         const size_t length) {
     assert(((uintptr_t) randomsource & 15) == 0);// we expect cache line alignment for the keys
     // we expect length = 128, so we need  16 cache lines of keys and 16 cache lines of strings.
@@ -422,12 +422,12 @@ uint64_t clhash(const void* random, const char * stringbyte,
     const uint64_t * string = (const uint64_t *)  stringbyte;
     if (m < lengthinc) { // long strings // modified from length to lengthinc to address issue #3 raised by Eik List
         /* First block initializes accumulator directly. */
-        __m128i  acc =  __clmulhalfscalarproductwithoutreduction(rs64, string,m);
+        __m128i  acc =  clmulhalfscalarproductwithoutreduction(rs64, string,m);
         size_t t = m;
         for (; t +  m <= length; t +=  m) {
             // Horner-like fold: acc <- polyvalue * acc XOR block_hash
             acc =  mul128by128to128_lazymod127(polyvalue,acc);
-            const __m128i h1 =  __clmulhalfscalarproductwithoutreduction(rs64, string+t,m);
+            const __m128i h1 =  clmulhalfscalarproductwithoutreduction(rs64, string+t,m);
             acc = _mm_xor_si128(acc,h1);
         }
         const int remain = length - t;  // number of completely filled words
