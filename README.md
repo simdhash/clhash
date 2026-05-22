@@ -125,21 +125,6 @@ int main(void) {
  ```
 
 
-## Citation
-
-If you use this library in your work, please cite:
-
-```bibtex
-@article{lemire2016faster,
-    title={Faster 64-bit universal hashing using carry-less multiplications},
-    author={Lemire, Daniel and Kaser, Owen},
-    journal={Journal of Cryptographic Engineering},
-    volume={6},
-    number={3},
-    pages={171--185},
-    year={2016}
-}
-```
 
 ## CMake
 
@@ -213,3 +198,21 @@ cc -O3 -march=armv8-a+crypto -std=c99 -Iinclude my_program.c clhash.o -o my_prog
 ```
 
 The library has no external dependencies beyond the C standard library.
+
+
+
+## Citation
+
+If you use this library in your work, please cite:
+
+```bibtex
+@article{lemire2016faster,
+    title={Faster 64-bit universal hashing using carry-less multiplications},
+    author={Lemire, Daniel and Kaser, Owen},
+    journal={Journal of Cryptographic Engineering},
+    volume={6},
+    number={3},
+    pages={171--185},
+    year={2016}
+}
+```
