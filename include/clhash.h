@@ -20,6 +20,20 @@
 #ifndef INCLUDE_CLHASH_H_
 #define INCLUDE_CLHASH_H_
 
+/*
+ * Library version. These macros are kept in lock-step with the project version
+ * in CMakeLists.txt; consumers can do compile-time checks such as
+ *
+ *   #if (CLHASH_VERSION_MAJOR < 1) || \
+ *       (CLHASH_VERSION_MAJOR == 1 && CLHASH_VERSION_MINOR < 1)
+ *   #error "clhash >= 1.1 required"
+ *   #endif
+ */
+#define CLHASH_VERSION_MAJOR  1
+#define CLHASH_VERSION_MINOR  0
+#define CLHASH_VERSION_PATCH  0
+#define CLHASH_VERSION_STRING "1.0.0"
+
 
 #include <stdlib.h>
 #include <stdint.h> // life is short, please use a C99-compliant compiler

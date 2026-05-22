@@ -9,7 +9,11 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     Debug Release RelWithDebInfo MinSizeRel)
 endif()
 
-project(clhash LANGUAGES C CXX)
+project(clhash
+  VERSION 1.0.0
+  DESCRIPTION "Fast 64-bit universal hashing via carry-less multiplication"
+  HOMEPAGE_URL "https://github.com/simdhash/clhash"
+  LANGUAGES C CXX)
 
 option(CLHASH_ENABLE_BITMIX "Enable CLHASH_BITMIX compile definition" OFF)
 include(cmake/CPM.cmake)
@@ -24,6 +28,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(clhash src/clhash.c)
 add_library(clhash::clhash ALIAS clhash)
+
+# Version the library artifact. For a shared build this drives SONAME and the
+# symlink chain (libclhash.so -> libclhash.so.1 -> libclhash.so.1.0.0). It is
+# harmless for the static build that we default to today.
+set_target_properties(clhash PROPERTIES
+  VERSION   ${PROJECT_VERSION}
+  SOVERSION ${PROJECT_VERSION_MAJOR})
 
 # Generator expressions so the include path is correct in both the build
 # tree and after `cmake --install`.
@@ -73,7 +84,7 @@ if(CLHASH_INSTALL)
 "include(\"\${CMAKE_CURRENT_LIST_DIR}/clhashTargets.cmake\")\n")
   write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/clhashConfigVersion.cmake"
-    VERSION 1.0.0
+    VERSION ${PROJECT_VERSION}
     COMPATIBILITY SameMajorVersion)
 
   install(FILES
