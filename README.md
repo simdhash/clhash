@@ -34,7 +34,8 @@ uint64_t javalikehash(char *input, size_t length) {
 }
 ```
 
-
+You should expect clhash to be between **20 to 40 times** faster than this reference
+hash function for input spanning hundreds of bytes or more.
 
 
 ## Requirements
@@ -53,10 +54,6 @@ POWER and other architectures are not currently supported; the build will
 fail at preprocessing with a clear `#error`.
 
 If your compiler is not C99 compliant... please get better one.
-
-If your applications requires hashing tiny strings, then you will not get a speed close to 0.1 cycles per byte. 
-The string should be significantly several times larger than a vector register (128 bits). So clhash is not
-meant to be a general-purpose hash function.
 
 
 ## Usage
