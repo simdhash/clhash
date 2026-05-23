@@ -272,7 +272,7 @@ static __m128i clmulhalfscalarproductwithoutreduction(const __m128i * randomsour
  * Same half-scalar product as above, but with explicit handling for 1 or 2
  * trailing 64-bit words.
  */
-static __m128i __clmulhalfscalarproductwithtailwithoutreduction(const __m128i * randomsource,
+static __m128i clmulhalfscalarproductwithtailwithoutreduction(const __m128i * randomsource,
         const uint64_t * string, const size_t length) {
     assert(((uintptr_t) randomsource & 15) == 0);// we expect cache line alignment for the keys
     const uint64_t * const endstring = string + length;
@@ -313,7 +313,7 @@ static __m128i __clmulhalfscalarproductwithtailwithoutreduction(const __m128i * 
 }
 // the value length does not have to be divisible by 4
 // additionally folds one extra synthesized word (partial tail packed in LE).
-static __m128i __clmulhalfscalarproductwithtailwithoutreductionWithExtraWord(const __m128i * randomsource,
+static __m128i clmulhalfscalarproductwithtailwithoutreductionWithExtraWord(const __m128i * randomsource,
         const uint64_t * string, const size_t length, const uint64_t extraword) {
     assert(((uintptr_t) randomsource & 15) == 0);// we expect cache line alignment for the keys
     const uint64_t * const endstring = string + length;
@@ -357,7 +357,7 @@ static __m128i __clmulhalfscalarproductwithtailwithoutreductionWithExtraWord(con
 }
 
 
-static __m128i __clmulhalfscalarproductOnlyExtraWord(const __m128i * randomsource,
+static __m128i clmulhalfscalarproductOnlyExtraWord(const __m128i * randomsource,
         const uint64_t extraword) {
     const __m128i temp1 = _mm_load_si128(randomsource);
     const __m128i temp2 = _mm_loadl_epi64((__m128i const*)&extraword);
@@ -437,14 +437,14 @@ uint64_t clhash(const void* random, const char * stringbyte,
             acc = mul128by128to128_lazymod127(polyvalue, acc);
             if (lengthbyte % sizeof(uint64_t) == 0) {
                 const __m128i h1 =
-                    __clmulhalfscalarproductwithtailwithoutreduction(rs64,
+                    clmulhalfscalarproductwithtailwithoutreduction(rs64,
                             string + t, remain);
                 acc = _mm_xor_si128(acc, h1);
             } else {
                 const uint64_t lastword = createLastWord(lengthbyte,
                                           (string + length));
                 const __m128i h1 =
-                    __clmulhalfscalarproductwithtailwithoutreductionWithExtraWord(
+                    clmulhalfscalarproductwithtailwithoutreductionWithExtraWord(
                         rs64, string + t, remain, lastword);
                 acc = _mm_xor_si128(acc, h1);
             }
@@ -452,7 +452,7 @@ uint64_t clhash(const void* random, const char * stringbyte,
             // there are no completely filled words left, but there is one partial word.
             acc = mul128by128to128_lazymod127(polyvalue, acc);
             const uint64_t lastword = createLastWord(lengthbyte, (string + length));
-            const __m128i h1 = __clmulhalfscalarproductOnlyExtraWord( rs64, lastword);
+            const __m128i h1 = clmulhalfscalarproductOnlyExtraWord( rs64, lastword);
             acc = _mm_xor_si128(acc, h1);
         }
 
@@ -463,7 +463,7 @@ uint64_t clhash(const void* random, const char * stringbyte,
     } else { // short strings
         /* Single-block path: no polynomial folding needed. */
         if(lengthbyte % sizeof(uint64_t) == 0) {
-            __m128i  acc = __clmulhalfscalarproductwithtailwithoutreduction(rs64, string, length);
+            __m128i  acc = clmulhalfscalarproductwithtailwithoutreduction(rs64, string, length);
             const uint64_t keylength = *(const uint64_t *)(rs64 + m128neededperblock + 2);
             acc = _mm_xor_si128(acc,lazyLengthHash(keylength, (uint64_t)lengthbyte));
 #ifdef CLHASH_BITMIX
@@ -473,7 +473,7 @@ uint64_t clhash(const void* random, const char * stringbyte,
 #endif
         }
         const uint64_t lastword = createLastWord(lengthbyte, (string + length));
-        __m128i acc = __clmulhalfscalarproductwithtailwithoutreductionWithExtraWord(
+        __m128i acc = clmulhalfscalarproductwithtailwithoutreductionWithExtraWord(
                           rs64, string, length, lastword);
         const uint64_t keylength =  *(const uint64_t *)(rs64 + m128neededperblock + 2);
         acc = _mm_xor_si128(acc,lazyLengthHash(keylength, (uint64_t)lengthbyte));
